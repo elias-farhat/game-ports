@@ -1,0 +1,34 @@
+<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>Record Search</title>
+<style>
+body{font:15px system-ui;margin:0;background:#f5f6f8;color:#222}
+header{background:#fff;padding:14px 20px;box-shadow:0 1px 3px #0002;position:sticky;top:0}
+input,select,button{font:inherit;padding:8px 10px;border:1px solid #bbb;border-radius:6px}
+#q{width:min(420px,90%)}button{background:#2563eb;color:#fff;border-color:#2563eb;cursor:pointer}
+main{padding:16px 20px;max-width:1000px;margin:auto}
+.card{background:#fff;border-radius:8px;padding:10px 14px;margin:8px 0;box-shadow:0 1px 2px #0002}
+.src{font-size:12px;color:#777}.f{display:inline-block;margin:2px 14px 2px 0}.f b{color:#666;font-weight:600}
+mark{background:#fde68a}
+</style>
+<header><input id=q placeholder="Search…" autofocus>
+<select id=mode><option value=contains>Contains</option><option value=exact>Exact</option><option value=prefix>Starts with</option></select>
+<select id=file><option value="">All files</option></select>
+<button onclick="go(0)">Search</button> <span id=info></span></header>
+<main><div id=out></div><button id=more style=display:none onclick="go(off)">Load more</button></main>
+<script>
+const $=id=>document.getElementById(id);let off=0;
+const esc=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+fetch('/api/files').then(r=>r.json()).then(fs=>{let t=0;fs.forEach(f=>{t+=f.rows;$('file').add(new Option(`${f.name} (${f.rows.toLocaleString()})`,f.id))});$('info').textContent=t.toLocaleString()+' records indexed'});
+$('q').addEventListener('keydown',e=>e.key=='Enter'&&go(0));
+async function go(o){
+ if(o==0){$('out').innerHTML='';off=0}
+ const u=`/api/search?q=${encodeURIComponent($('q').value)}&mode=${$('mode').value}&file=${$('file').value}&offset=${o}&limit=50`;
+ const r=await (await fetch(u)).json();
+ if(r.error){$('out').innerHTML='<div class=card>'+esc(r.error)+'</div>';return}
+ const re=new RegExp('('+$('q').value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','ig');
+ r.results.forEach(x=>{$('out').insertAdjacentHTML('beforeend',`<div class=card><div class=src>${esc(x.file)} › ${esc(x.table)}</div>`+
+  x.fields.map(([k,v])=>`<span class=f><b>${esc(k)}:</b> ${esc(v).replace(re,'<mark>$1</mark>')}</span>`).join('')+'</div>')});
+ off=o+r.results.length;$('more').style.display=off<r.total?'':'none';
+ $('info').textContent=r.total.toLocaleString()+(r.capped?'+':'')+' matches';
+}
+</script>
