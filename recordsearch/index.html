@@ -26,6 +26,10 @@ mark{background:#fde68a;color:#000}.err{color:#dc2626}h2{margin:.2em 0}
  <div id=drop>Drop files or whole folders here, or <label style="color:var(--acc);cursor:pointer"><u>choose files</u><input id=pick type=file multiple hidden></label>
    or <label style="color:var(--acc);cursor:pointer"><u>choose a folder</u><input id=pickdir type=file webkitdirectory multiple hidden></label>
    <div style="margin-top:8px"><input id=path size=44 placeholder="…or a file/folder path on this computer (no copy, fastest)"> <button onclick=addPath()>Add</button></div></div>
+ <details id=pwbox style="margin:8px 0"><summary>Passwords for protected Access files <span id=pwn class=mut></span></summary>
+  <p class=mut style="margin:6px 0">One per line. Each protected file in this container is tried with every password here. Saved in this container's folder on your drive.</p>
+  <textarea id=pws rows=3 style="width:min(420px,100%);font:inherit;padding:8px;border:1px solid var(--bd);border-radius:8px;background:var(--card);color:var(--fg)"></textarea><br>
+  <button onclick="savePw()">Save passwords &amp; retry failed files</button></details>
  <div id=files></div>
  <div style="margin:18px 0 6px"><input id=q size=36 placeholder="Search…" autofocus>
   <select id=mode><option value=contains>Contains</option><option value=exact>Exact</option><option value=prefix>Starts with</option></select>
@@ -41,17 +45,22 @@ async function refresh(){data=await J('/api/containers');if(!data.find(c=>c.id==
 function render(){
  $('list').innerHTML=data.map(c=>`<div class="c ${c.id==cur?'on':''}" onclick="sel('${c.id}')"><b>${esc(c.label)}</b><small>${c.files.length} files · ${fmt(c.rows)} records</small></div>`).join('');
  const c=data.find(x=>x.id==cur);$('empty').style.display=c?'none':'';$('view').style.display=c?'':'none';if(!c)return;
- $('title').textContent=c.label;
+ $('title').textContent=c.label;$('pwn').textContent=c.passwords.length?`(${c.passwords.length} saved)`:'';
+ if(pwShown!==c.id){$('pws').value=c.passwords.join('\n');pwShown=c.id;if(c.files.some(f=>/password/i.test(f.error||'')))$('pwbox').open=true}
  const up=Object.entries(ups).filter(([k,u])=>u.cid==cur).map(([k,u])=>`<div class=row><span>${esc(u.name)}</span><span class=mut>uploading ${u.pct}%</span></div><div class=bar><i style="width:${u.pct}%"></i></div>`).join('');
  const qn=queue.filter(u=>u.cid==cur).length;
  $('files').innerHTML=(qn?`<div class=mut>${qn} files waiting to upload…</div>`:'')+up+c.files.map(f=>`<div class=row><span>${esc(f.name)} <small class=mut>${f.kind}</small></span>`+
-  (f.state=='skipped'?`<span class=mut title="${esc(f.error)}">skipped (not a data file)</span>`:f.state=='done'?`<span class=mut>${fmt(f.rows)} rows · ${f.seconds}s</span>`:f.state=='failed'?`<span class=err title="${esc(f.error)}">failed: ${esc((f.error||'').slice(0,60))}</span>`:`<span class=mut>${f.state=='indexing'?'building search index…':f.state} ${fmt(f.rows)}</span>`)+
+  (f.state=='skipped'?`<span class=mut title="${esc(f.error)}">skipped (not a data file)</span>`:f.state=='done'?`<span class=mut>${fmt(f.rows)} rows · ${f.seconds}s</span>`:f.state=='failed'?`<span class=err title="${esc(f.error)}">failed: ${esc((f.error||'').slice(0,70))}</span> <button onclick="retryF('${f.id}')">Retry</button>`:`<span class=mut>${f.state=='indexing'?'building search index…':f.state} ${fmt(f.rows)}</span>`)+
   `<button onclick="delF('${f.id}')">✕</button></div>`).join('');
 }
 function sel(id){cur=id;localStorage.cur=id;$('out').innerHTML='';render()}
 async function newC(){const l=prompt('Container label:');if(!l)return;const r=await J('/api/containers',{method:'POST',body:JSON.stringify({label:l})});cur=r.id;await refresh()}
 async function rename(){const l=prompt('New label:',data.find(c=>c.id==cur).label);if(!l)return;await fetch('/api/containers/'+cur,{method:'PATCH',body:JSON.stringify({label:l})});refresh()}
 async function delC(){if(!confirm('Delete this container and its index? (your original files are not touched)'))return;await fetch('/api/containers/'+cur,{method:'DELETE'});refresh()}
+async function retryF(id){const r=await J(`/api/containers/${cur}/files/${id}/retry`,{method:'POST'});if(r.error)alert(r.error);refresh()}
+async function savePw(){const pw=$('pws').value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+ await fetch('/api/containers/'+cur,{method:'PATCH',body:JSON.stringify({passwords:pw})});await J(`/api/containers/${cur}/retry`,{method:'POST'});pwShown='';refresh()}
+let pwShown='';
 async function delF(id){await fetch(`/api/containers/${cur}/files/${id}`,{method:'DELETE'});refresh()}
 async function addPath(){const p=$('path').value;if(!p)return;const r=await J(`/api/containers/${cur}/addpath`,{method:'POST',body:JSON.stringify({path:p})});if(r.error)alert(r.error);$('path').value='';refresh()}
 let queue=[],running=0;

@@ -48,7 +48,7 @@ def container_info(cid):
     meta = read_json(os.path.join(cdir(cid), "meta.json"), {})
     files = list_files(cid)
     return {"id": cid, "label": meta.get("label", cid), "created": meta.get("created", 0),
-            "files": files, "rows": sum(f.get("rows", 0) for f in files if f.get("state") == "done")}
+            "passwords": meta.get("passwords", []), "files": files, "rows": sum(f.get("rows", 0) for f in files if f.get("state") == "done")}
 
 
 def all_containers():
@@ -65,15 +65,29 @@ def new_container(label):
     return cid
 
 
-def submit(cid, src, name, delete_src):
-    fid = uuid.uuid4().hex[:10]
+def submit(cid, src, name, delete_src, fid=None):
+    fid = fid or uuid.uuid4().hex[:10]
     d = cdir(cid)
+    pws = read_json(os.path.join(d, "meta.json"), {}).get("passwords", [])
     sp = os.path.join(d, "files", fid + ".json")
     with open(sp, "w") as f: json.dump({"state": "queued", "name": name, "rows": 0, "kind": "?"}, f)
     ACTIVE.add(fid)
-    fut = POOL.submit(ingest_file, src, os.path.join(d, "shards", fid + ".db"), sp, name, delete_src)
+    fut = POOL.submit(ingest_file, src, os.path.join(d, "shards", fid + ".db"), sp, name, delete_src, True, tuple(pws))
     fut.add_done_callback(lambda _f: ACTIVE.discard(fid))
     return fid
+
+
+def retry(cid, fid):
+    st = read_json(os.path.join(cdir(cid), "files", fid + ".json"), {})
+    if fid in ACTIVE: return 1
+    if not st.get("src") or not os.path.exists(st["src"]):
+        raise ValueError("Original file is gone (drive unplugged or upload removed) - add it again.")
+    submit(cid, st["src"], st["name"], st.get("upload", False), fid)
+    return 1
+
+
+def retry_failed(cid):
+    return sum(retry(cid, f["id"]) for f in list_files(cid) if f.get("state") == "failed")
 
 
 def add_path(cid, p):
@@ -161,7 +175,9 @@ class H(BaseHTTPRequestHandler):
                     if method == "DELETE": shutil.rmtree(cdir(cid)); return self.send({"ok": 1})
                     if method == "PATCH":
                         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
-                        mp = os.path.join(cdir(cid), "meta.json"); m = read_json(mp, {}); m["label"] = body["label"].strip()[:60]
+                        mp = os.path.join(cdir(cid), "meta.json"); m = read_json(mp, {})
+                        if "label" in body: m["label"] = body["label"].strip()[:60]
+                        if "passwords" in body: m["passwords"] = [x for x in body["passwords"] if x]
                         json.dump(m, open(mp, "w")); return self.send({"ok": 1})
                 if parts[3:] == ["upload"] and method == "POST":
                     name = g("name", "file").replace("\\", "/").strip("/") or "file"
@@ -173,11 +189,19 @@ class H(BaseHTTPRequestHandler):
                             if not chunk: break
                             f.write(chunk); left -= len(chunk)
                     return self.send({"id": submit(cid, tmp, name, True)})
+                if parts[3:] == ["retry"] and method == "POST":
+                    return self.send({"retried": retry_failed(cid)})
                 if parts[3:] == ["addpath"] and method == "POST":
                     body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
                     return self.send({"ids": add_path(cid, body["path"])})
+                if len(parts) == 6 and parts[3] == "files" and parts[5] == "retry" and method == "POST":
+                    return self.send({"ok": retry(cid, re.sub(r"[^a-z0-9]", "", parts[4]))})
                 if len(parts) == 5 and parts[3] == "files" and method == "DELETE":
                     fid = re.sub(r"[^a-z0-9]", "", parts[4])
+                    st = read_json(os.path.join(cdir(cid), "files", fid + ".json"), {})
+                    if st.get("upload") and st.get("src"):
+                        try: os.remove(st["src"])
+                        except OSError: pass
                     for ext in ("files/%s.json", "shards/%s.db"):
                         try: os.remove(os.path.join(cdir(cid), ext % fid))
                         except OSError: pass
@@ -212,7 +236,9 @@ if __name__ == "__main__":
     ap.add_argument("-w", "--workers", type=int, default=os.cpu_count() or 2)
     ap.add_argument("--no-browser", action="store_true")
     a = ap.parse_args(); DATA = a.data; os.makedirs(DATA, exist_ok=True)
+    keep = {(read_json(p) or {}).get("src") for p in glob.glob(os.path.join(DATA, "*", "files", "*.json"))}
     for up in glob.glob(os.path.join(DATA, "*", "uploads", "*")):
+        if up in keep: continue
         try: os.remove(up)
         except OSError: pass
     POOL = ProcessPoolExecutor(a.workers)

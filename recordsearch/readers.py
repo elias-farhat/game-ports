@@ -46,7 +46,7 @@ def read_sqlite(path):
         yield t, cols, iter(cur)
 
 
-def read_access(path):
+def read_access(path, passwords=()):
     if shutil.which("mdb-tables"):
         tables = subprocess.run(["mdb-tables", "-1", path], capture_output=True, text=True, check=True).stdout.split()
         for t in tables:
@@ -60,7 +60,20 @@ def read_access(path):
     except ImportError:
         raise RuntimeError("Access file: install mdbtools (Linux/Mac: apt/brew install mdbtools) "
                            "or pip install pyodbc on Windows with the Access ODBC driver.")
-    con = pyodbc.connect(r"DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=" + os.path.abspath(path) + ";")
+    base = r"DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=" + os.path.abspath(path) + ";"
+    con, last = None, None
+    for pw in [None, *passwords]:  # try without a password first, then each saved one
+        try:
+            con = pyodbc.connect(base + ("" if pw is None else "PWD={" + pw.replace("}", "}}") + "};"))
+            break
+        except pyodbc.Error as e:
+            last = e
+            if "password" not in str(e).lower():
+                raise
+    if con is None:
+        raise RuntimeError("password-protected: none of this container's saved passwords worked. "
+                           "Add the right one under 'Passwords', then click Retry." if passwords else
+                           "password-protected: add its password under 'Passwords', then click Retry.")
     for r in con.cursor().tables(tableType="TABLE"):
         cur = con.cursor().execute(f"select * from [{r.table_name}]")
         yield r.table_name, [d[0] for d in cur.description], iter(cur)
@@ -120,8 +133,10 @@ def read_text(path):
 READERS = {"sqlite": read_sqlite, "access": read_access, "dbf": read_dbf, "xlsx": read_xlsx, "text": read_text}
 
 
-def read_any(path):
+def read_any(path, passwords=()):
     kind = sniff(path)
     if kind not in READERS:
         raise Unsupported(f"unsupported format '{kind}' (old .xls: save as .xlsx)")
+    if kind == "access":
+        return kind, read_access(path, passwords)
     return kind, READERS[kind](path)

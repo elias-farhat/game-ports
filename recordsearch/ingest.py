@@ -20,15 +20,15 @@ def write_status(path, **kw):
     os.replace(tmp, path)
 
 
-def ingest_file(src, shard_path, status_path, name, delete_src=False, fts=True):
+def ingest_file(src, shard_path, status_path, name, delete_src=False, fts=True, passwords=()):
     """Creates shard_path (atomically, only when complete) and keeps status_path updated."""
     tmp = shard_path + ".building"
-    st = dict(state="running", name=name, kind="?", rows=0, started=time.time())
+    st = dict(state="running", name=name, kind="?", rows=0, started=time.time(), src=src, upload=delete_src)
     try:
         if os.path.exists(tmp):
             os.remove(tmp)
         write_status(status_path, **st)
-        kind, tables = read_any(src)
+        kind, tables = read_any(src, passwords)
         st["kind"] = kind
         db = sqlite3.connect(tmp)
         db.executescript("""pragma journal_mode=off; pragma synchronous=off; pragma cache_size=-300000;
@@ -73,6 +73,6 @@ def ingest_file(src, shard_path, status_path, name, delete_src=False, fts=True):
         if os.path.exists(tmp):
             os.remove(tmp)
     finally:
-        if delete_src:
+        if delete_src and st["state"] != "failed":
             try: os.remove(src)
             except OSError: pass
