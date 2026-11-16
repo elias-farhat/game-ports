@@ -1,0 +1,41 @@
+name: Build RecordSearch.exe
+
+on:
+  push:
+    paths: ["recordsearch/**", ".github/workflows/build-recordsearch-exe.yml"]
+  workflow_dispatch:
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: recordsearch
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install pyinstaller==6.11.1 -r requirements.txt pyodbc
+      - name: Build single-file exe
+        run: pyinstaller --noconfirm --onefile --name RecordSearch --add-data "index.html;." --hidden-import pyodbc app.py
+      - name: Smoke test (start, index a file, search, stop)
+        shell: pwsh
+        run: |
+          "id|name`n1|Alice`n2|Bob" | Set-Content -Encoding utf8 sample.txt
+          $p = Start-Process -FilePath dist\RecordSearch.exe -ArgumentList "--no-browser","-p","8799","-D","smoke-data" -PassThru
+          Start-Sleep 8
+          $c = Invoke-RestMethod -Method Post -Uri http://localhost:8799/api/containers -Body '{"label":"smoke"}'
+          $body = @{ path = (Resolve-Path sample.txt).Path } | ConvertTo-Json
+          Invoke-RestMethod -Method Post -Uri "http://localhost:8799/api/containers/$($c.id)/addpath" -Body $body | Out-Null
+          Start-Sleep 6
+          $r = Invoke-RestMethod "http://localhost:8799/api/search?c=all&q=Alice&mode=exact"
+          Stop-Process -Id $p.Id -Force
+          Get-Process RecordSearch -ErrorAction SilentlyContinue | Stop-Process -Force
+          if ($r.total -ne 1) { throw "search failed: $($r | ConvertTo-Json -Depth 5)" }
+          "smoke test OK"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RecordSearch-windows
+          path: recordsearch/dist/RecordSearch.exe

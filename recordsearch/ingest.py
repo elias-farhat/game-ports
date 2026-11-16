@@ -1,6 +1,6 @@
 """Index ONE file into its own shard database (runs in a worker process)."""
 import json, os, sqlite3, time
-from readers import read_any
+from readers import read_any, Unsupported
 
 BATCH = 100000
 
@@ -36,6 +36,8 @@ def ingest_file(src, shard_path, status_path, name, delete_src=False, fts=True):
           create table records(id integer primary key, tid int, data text);""")
         n, last = 0, time.time()
         for tname, cols, rows in tables:
+            if tname == os.path.basename(src):
+                tname = os.path.basename(name.replace("\\", "/"))
             tid = db.execute("insert into tables(name,cols) values(?,?)",
                              (tname, "\t".join(clean(c) for c in cols))).lastrowid
             buf = []
@@ -60,6 +62,11 @@ def ingest_file(src, shard_path, status_path, name, delete_src=False, fts=True):
         os.replace(tmp, shard_path)
         st.update(state="done", seconds=round(time.time() - st["started"], 1))
         write_status(status_path, **st)
+    except Unsupported as e:
+        st.update(state="skipped", error=str(e))
+        write_status(status_path, **st)
+        if os.path.exists(tmp):
+            os.remove(tmp)
     except Exception as e:
         st.update(state="failed", error=str(e))
         write_status(status_path, **st)

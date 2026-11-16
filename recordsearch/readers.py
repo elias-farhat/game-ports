@@ -2,6 +2,18 @@
 Format is detected from the file's first bytes, not just its extension."""
 import csv, io, os, shutil, sqlite3, subprocess, sys, zipfile
 
+
+class Unsupported(Exception):
+    pass
+
+
+JUNK = {"desktop.ini", "thumbs.db", ".ds_store"}
+
+
+def is_junk(name):
+    n = os.path.basename(name).lower()
+    return n in JUNK or n.startswith((".", "~$"))
+
 csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
 
 
@@ -111,5 +123,5 @@ READERS = {"sqlite": read_sqlite, "access": read_access, "dbf": read_dbf, "xlsx"
 def read_any(path):
     kind = sniff(path)
     if kind not in READERS:
-        raise RuntimeError(f"unsupported format '{kind}' (old .xls: save as .xlsx)")
+        raise Unsupported(f"unsupported format '{kind}' (old .xls: save as .xlsx)")
     return kind, READERS[kind](path)

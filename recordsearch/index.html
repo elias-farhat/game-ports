@@ -23,7 +23,8 @@ mark{background:#fde68a;color:#000}.err{color:#dc2626}h2{margin:.2em 0}
 <div id=empty class=mut>Create a container to start.</div>
 <div id=view style=display:none>
  <h2><span id=title></span> <button onclick="rename()" title=Rename>✎</button> <button onclick="delC()" title=Delete>🗑</button></h2>
- <div id=drop>Drop files here or <label style="color:var(--acc);cursor:pointer"><u>choose files</u><input id=pick type=file multiple hidden></label>
+ <div id=drop>Drop files or whole folders here, or <label style="color:var(--acc);cursor:pointer"><u>choose files</u><input id=pick type=file multiple hidden></label>
+   or <label style="color:var(--acc);cursor:pointer"><u>choose a folder</u><input id=pickdir type=file webkitdirectory multiple hidden></label>
    <div style="margin-top:8px"><input id=path size=44 placeholder="…or a file/folder path on this computer (no copy, fastest)"> <button onclick=addPath()>Add</button></div></div>
  <div id=files></div>
  <div style="margin:18px 0 6px"><input id=q size=36 placeholder="Search…" autofocus>
@@ -42,8 +43,9 @@ function render(){
  const c=data.find(x=>x.id==cur);$('empty').style.display=c?'none':'';$('view').style.display=c?'':'none';if(!c)return;
  $('title').textContent=c.label;
  const up=Object.entries(ups).filter(([k,u])=>u.cid==cur).map(([k,u])=>`<div class=row><span>${esc(u.name)}</span><span class=mut>uploading ${u.pct}%</span></div><div class=bar><i style="width:${u.pct}%"></i></div>`).join('');
- $('files').innerHTML=up+c.files.map(f=>`<div class=row><span>${esc(f.name)} <small class=mut>${f.kind}</small></span>`+
-  (f.state=='done'?`<span class=mut>${fmt(f.rows)} rows · ${f.seconds}s</span>`:f.state=='failed'?`<span class=err title="${esc(f.error)}">failed: ${esc((f.error||'').slice(0,60))}</span>`:`<span class=mut>${f.state=='indexing'?'building search index…':f.state} ${fmt(f.rows)}</span>`)+
+ const qn=queue.filter(u=>u.cid==cur).length;
+ $('files').innerHTML=(qn?`<div class=mut>${qn} files waiting to upload…</div>`:'')+up+c.files.map(f=>`<div class=row><span>${esc(f.name)} <small class=mut>${f.kind}</small></span>`+
+  (f.state=='skipped'?`<span class=mut title="${esc(f.error)}">skipped (not a data file)</span>`:f.state=='done'?`<span class=mut>${fmt(f.rows)} rows · ${f.seconds}s</span>`:f.state=='failed'?`<span class=err title="${esc(f.error)}">failed: ${esc((f.error||'').slice(0,60))}</span>`:`<span class=mut>${f.state=='indexing'?'building search index…':f.state} ${fmt(f.rows)}</span>`)+
   `<button onclick="delF('${f.id}')">✕</button></div>`).join('');
 }
 function sel(id){cur=id;localStorage.cur=id;$('out').innerHTML='';render()}
@@ -53,14 +55,23 @@ async function delC(){if(!confirm('Delete this container and its index? (your or
 async function delF(id){await fetch(`/api/containers/${cur}/files/${id}`,{method:'DELETE'});refresh()}
 async function addPath(){const p=$('path').value;if(!p)return;const r=await J(`/api/containers/${cur}/addpath`,{method:'POST',body:JSON.stringify({path:p})});if(r.error)alert(r.error);$('path').value='';refresh()}
 let queue=[],running=0;
-function enqueue(files){for(const f of files)queue.push({f,cid:cur});pump()}
-function pump(){while(running<3&&queue.length){const {f,cid}=queue.shift(),k=Math.random();running++;ups[k]={cid,name:f.name,pct:0};
- const x=new XMLHttpRequest();x.open('POST',`/api/containers/${cid}/upload?name=${encodeURIComponent(f.name)}`);
+const JUNK=/(^|\/)\.|(^|\/)(~\$[^/]*|desktop\.ini|thumbs\.db)$/i;
+function enqueue(files){for(const f of files){const name=f.rel||f.webkitRelativePath||f.name;if(!JUNK.test(name))queue.push({f,name,cid:cur})}pump();render()}
+// walk dropped folders (and their sub-folders) recursively
+function walk(entry,path){return new Promise(res=>{
+ if(entry.isFile)entry.file(f=>{f.rel=path+f.name;res([f])},()=>res([]));
+ else if(entry.isDirectory){const rd=entry.createReader(),all=[];
+  const next=()=>rd.readEntries(async es=>{if(!es.length){const sub=await Promise.all(all.map(e=>walk(e,path+entry.name+'/')));res(sub.flat());return}all.push(...es);next()},()=>res([]));next()}
+ else res([])})}
+function pump(){while(running<4&&queue.length){const {f,name,cid}=queue.shift(),k=Math.random();running++;ups[k]={cid,name,pct:0};
+ const x=new XMLHttpRequest();x.open('POST',`/api/containers/${cid}/upload?name=${encodeURIComponent(name)}`);
  x.upload.onprogress=e=>{ups[k].pct=Math.round(100*e.loaded/e.total);render()};
  x.onloadend=()=>{delete ups[k];running--;pump();refresh()};x.send(f)}}
-$('pick').onchange=e=>{enqueue([...e.target.files]);e.target.value=''};
+$('pick').onchange=$('pickdir').onchange=e=>{enqueue([...e.target.files]);e.target.value=''};
 const d=$('drop');d.ondragover=e=>{e.preventDefault();d.classList.add('over')};d.ondragleave=()=>d.classList.remove('over');
-d.ondrop=e=>{e.preventDefault();d.classList.remove('over');enqueue([...e.dataTransfer.files])};
+d.ondrop=async e=>{e.preventDefault();d.classList.remove('over');
+ const es=[...e.dataTransfer.items].map(i=>i.webkitGetAsEntry&&i.webkitGetAsEntry()).filter(Boolean);
+ enqueue(es.length?(await Promise.all(es.map(en=>walk(en,'')))).flat():[...e.dataTransfer.files])};
 $('q').addEventListener('keydown',e=>e.key=='Enter'&&go(0));
 async function go(o){
  if(o==0){$('out').innerHTML='';off=0}const q=$('q').value;

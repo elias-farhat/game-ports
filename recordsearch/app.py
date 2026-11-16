@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Record Search: containers of indexed files, local web UI.
 usage: app.py [-D data_dir] [-p 8000]   then open http://localhost:8000"""
-import argparse, glob, json, os, re, shutil, sqlite3, time, uuid
+import argparse, glob, multiprocessing, socket, sys, threading, webbrowser, json, os, re, shutil, sqlite3, time, uuid
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, unquote
 from ingest import ingest_file
+from readers import is_junk
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+FROZEN = getattr(sys, "frozen", False)
 DATA = "data"
 POOL = None
 SEARCH_POOL = ThreadPoolExecutor(16)
@@ -77,12 +79,13 @@ def submit(cid, src, name, delete_src):
 def add_path(cid, p):
     p = p.strip().strip('"').strip("'")
     if os.path.isdir(p):
-        paths = [os.path.join(r, f) for r, _, fs in os.walk(p) for f in fs]
-    elif os.path.isfile(p):
-        paths = [p]
-    else:
-        raise ValueError(f"not found on this computer: {p}")
-    return [submit(cid, x, os.path.basename(x), False) for x in sorted(paths)]
+        base = os.path.dirname(os.path.abspath(p))
+        paths = [os.path.join(r, f) for r, ds, fs in os.walk(p) for f in fs if not is_junk(f)
+                 if not any(part.startswith(".") for part in os.path.relpath(r, p).split(os.sep) if part != ".")]
+        return [submit(cid, x, os.path.relpath(x, base), False) for x in sorted(paths)]
+    if os.path.isfile(p):
+        return [submit(cid, p, os.path.basename(p), False)]
+    raise ValueError(f"not found on this computer: {p}")
 
 
 # ---------- search ----------
@@ -161,8 +164,8 @@ class H(BaseHTTPRequestHandler):
                         mp = os.path.join(cdir(cid), "meta.json"); m = read_json(mp, {}); m["label"] = body["label"].strip()[:60]
                         json.dump(m, open(mp, "w")); return self.send({"ok": 1})
                 if parts[3:] == ["upload"] and method == "POST":
-                    name = os.path.basename(g("name", "file")) or "file"
-                    tmp = os.path.join(cdir(cid), "uploads", uuid.uuid4().hex[:8] + "_" + name)
+                    name = g("name", "file").replace("\\", "/").strip("/") or "file"
+                    tmp = os.path.join(cdir(cid), "uploads", uuid.uuid4().hex[:8] + "_" + re.sub(r"[^\w.\-]", "_", os.path.basename(name)))
                     left = int(self.headers.get("Content-Length", 0))
                     with open(tmp, "wb") as f:
                         while left:
@@ -193,12 +196,30 @@ class H(BaseHTTPRequestHandler):
     do_PATCH = lambda s: s.handle_any("PATCH")
 
 
+def free_port(start):
+    for port in range(start, start + 50):
+        with socket.socket() as sk:
+            if sk.connect_ex(("127.0.0.1", port)) != 0:
+                return port
+    raise SystemExit("no free port")
+
+
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
+    default_data = os.path.join(os.path.dirname(sys.executable), "RecordSearch-data") if FROZEN else "data"
     ap = argparse.ArgumentParser()
-    ap.add_argument("-D", "--data", default="data"); ap.add_argument("-p", "--port", type=int, default=8000)
+    ap.add_argument("-D", "--data", default=default_data); ap.add_argument("-p", "--port", type=int, default=8000)
     ap.add_argument("-w", "--workers", type=int, default=os.cpu_count() or 2)
+    ap.add_argument("--no-browser", action="store_true")
     a = ap.parse_args(); DATA = a.data; os.makedirs(DATA, exist_ok=True)
-    for up in glob.glob(os.path.join(DATA, "*", "uploads", "*")): os.remove(up)
+    for up in glob.glob(os.path.join(DATA, "*", "uploads", "*")):
+        try: os.remove(up)
+        except OSError: pass
     POOL = ProcessPoolExecutor(a.workers)
-    print(f"Open http://localhost:{a.port}   (data folder: {os.path.abspath(DATA)}, {a.workers} parallel indexers)")
-    ThreadingHTTPServer(("127.0.0.1", a.port), H).serve_forever()
+    port = free_port(a.port); url = f"http://localhost:{port}"
+    srv = ThreadingHTTPServer(("127.0.0.1", port), H)
+    print(f"Record Search is running at {url}\nData folder: {os.path.abspath(DATA)}\n"
+          f"{a.workers} parallel indexers. Keep this window open; close it to stop.")
+    if not a.no_browser:
+        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+    srv.serve_forever()
