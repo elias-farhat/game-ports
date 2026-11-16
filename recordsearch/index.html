@@ -1,34 +1,74 @@
 <!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Record Search</title>
 <style>
-body{font:15px system-ui;margin:0;background:#f5f6f8;color:#222}
-header{background:#fff;padding:14px 20px;box-shadow:0 1px 3px #0002;position:sticky;top:0}
-input,select,button{font:inherit;padding:8px 10px;border:1px solid #bbb;border-radius:6px}
-#q{width:min(420px,90%)}button{background:#2563eb;color:#fff;border-color:#2563eb;cursor:pointer}
-main{padding:16px 20px;max-width:1000px;margin:auto}
-.card{background:#fff;border-radius:8px;padding:10px 14px;margin:8px 0;box-shadow:0 1px 2px #0002}
-.src{font-size:12px;color:#777}.f{display:inline-block;margin:2px 14px 2px 0}.f b{color:#666;font-weight:600}
-mark{background:#fde68a}
+:root{--bg:#f4f5f7;--card:#fff;--fg:#1f2430;--mut:#6b7280;--acc:#2563eb;--bd:#e3e5ea}
+@media(prefers-color-scheme:dark){:root{--bg:#14161b;--card:#1d2027;--fg:#e6e8ee;--mut:#9aa1ad;--acc:#5b8cff;--bd:#2c3039}}
+*{box-sizing:border-box}body{font:15px system-ui;margin:0;background:var(--bg);color:var(--fg);display:flex;height:100vh}
+aside{width:270px;background:var(--card);border-right:1px solid var(--bd);padding:14px;overflow:auto;flex:none}
+main{flex:1;overflow:auto;padding:18px 24px}
+input,select,button{font:inherit;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--card);color:var(--fg)}
+button{cursor:pointer}button.p{background:var(--acc);border-color:var(--acc);color:#fff}
+.c{padding:10px 12px;border:1px solid var(--bd);border-radius:10px;margin:8px 0;cursor:pointer}
+.c.on{border-color:var(--acc);box-shadow:0 0 0 2px #2563eb33}.c b{display:block}.c small,.mut{color:var(--mut)}
+#drop{border:2px dashed var(--bd);border-radius:12px;padding:22px;text-align:center;margin:12px 0;color:var(--mut)}
+#drop.over{border-color:var(--acc);color:var(--acc)}
+.bar{height:5px;background:var(--bd);border-radius:3px;overflow:hidden;margin-top:4px}.bar i{display:block;height:100%;background:var(--acc)}
+.row{display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--bd)}.row>span:first-child{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.res{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px 14px;margin:8px 0}
+.src{font-size:12px;color:var(--mut)}.f{display:inline-block;margin:2px 16px 2px 0}.f b{color:var(--mut);font-weight:600}
+mark{background:#fde68a;color:#000}.err{color:#dc2626}h2{margin:.2em 0}
 </style>
-<header><input id=q placeholder="Search…" autofocus>
-<select id=mode><option value=contains>Contains</option><option value=exact>Exact</option><option value=prefix>Starts with</option></select>
-<select id=file><option value="">All files</option></select>
-<button onclick="go(0)">Search</button> <span id=info></span></header>
-<main><div id=out></div><button id=more style=display:none onclick="go(off)">Load more</button></main>
+<aside><button class=p style="width:100%" onclick="newC()">+ New container</button><div id=list></div></aside>
+<main>
+<div id=empty class=mut>Create a container to start.</div>
+<div id=view style=display:none>
+ <h2><span id=title></span> <button onclick="rename()" title=Rename>✎</button> <button onclick="delC()" title=Delete>🗑</button></h2>
+ <div id=drop>Drop files here or <label style="color:var(--acc);cursor:pointer"><u>choose files</u><input id=pick type=file multiple hidden></label>
+   <div style="margin-top:8px"><input id=path size=44 placeholder="…or a file/folder path on this computer (no copy, fastest)"> <button onclick=addPath()>Add</button></div></div>
+ <div id=files></div>
+ <div style="margin:18px 0 6px"><input id=q size=36 placeholder="Search…" autofocus>
+  <select id=mode><option value=contains>Contains</option><option value=exact>Exact</option><option value=prefix>Starts with</option></select>
+  <select id=scope><option value=this>This container</option><option value=all>All containers</option></select>
+  <button class=p onclick="go(0)">Search</button> <span id=info class=mut></span></div>
+ <div id=out></div><button id=more style=display:none onclick="go(off)">Load more</button>
+</div></main>
 <script>
-const $=id=>document.getElementById(id);let off=0;
-const esc=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-fetch('/api/files').then(r=>r.json()).then(fs=>{let t=0;fs.forEach(f=>{t+=f.rows;$('file').add(new Option(`${f.name} (${f.rows.toLocaleString()})`,f.id))});$('info').textContent=t.toLocaleString()+' records indexed'});
+const $=id=>document.getElementById(id),esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const J=(u,o)=>fetch(u,o).then(r=>r.json());let cur=localStorage.cur||'',off=0,data=[],ups={};
+const fmt=n=>(n||0).toLocaleString();
+async function refresh(){data=await J('/api/containers');if(!data.find(c=>c.id==cur))cur=data[0]?.id||'';localStorage.cur=cur;render()}
+function render(){
+ $('list').innerHTML=data.map(c=>`<div class="c ${c.id==cur?'on':''}" onclick="sel('${c.id}')"><b>${esc(c.label)}</b><small>${c.files.length} files · ${fmt(c.rows)} records</small></div>`).join('');
+ const c=data.find(x=>x.id==cur);$('empty').style.display=c?'none':'';$('view').style.display=c?'':'none';if(!c)return;
+ $('title').textContent=c.label;
+ const up=Object.entries(ups).filter(([k,u])=>u.cid==cur).map(([k,u])=>`<div class=row><span>${esc(u.name)}</span><span class=mut>uploading ${u.pct}%</span></div><div class=bar><i style="width:${u.pct}%"></i></div>`).join('');
+ $('files').innerHTML=up+c.files.map(f=>`<div class=row><span>${esc(f.name)} <small class=mut>${f.kind}</small></span>`+
+  (f.state=='done'?`<span class=mut>${fmt(f.rows)} rows · ${f.seconds}s</span>`:f.state=='failed'?`<span class=err title="${esc(f.error)}">failed: ${esc((f.error||'').slice(0,60))}</span>`:`<span class=mut>${f.state=='indexing'?'building search index…':f.state} ${fmt(f.rows)}</span>`)+
+  `<button onclick="delF('${f.id}')">✕</button></div>`).join('');
+}
+function sel(id){cur=id;localStorage.cur=id;$('out').innerHTML='';render()}
+async function newC(){const l=prompt('Container label:');if(!l)return;const r=await J('/api/containers',{method:'POST',body:JSON.stringify({label:l})});cur=r.id;await refresh()}
+async function rename(){const l=prompt('New label:',data.find(c=>c.id==cur).label);if(!l)return;await fetch('/api/containers/'+cur,{method:'PATCH',body:JSON.stringify({label:l})});refresh()}
+async function delC(){if(!confirm('Delete this container and its index? (your original files are not touched)'))return;await fetch('/api/containers/'+cur,{method:'DELETE'});refresh()}
+async function delF(id){await fetch(`/api/containers/${cur}/files/${id}`,{method:'DELETE'});refresh()}
+async function addPath(){const p=$('path').value;if(!p)return;const r=await J(`/api/containers/${cur}/addpath`,{method:'POST',body:JSON.stringify({path:p})});if(r.error)alert(r.error);$('path').value='';refresh()}
+let queue=[],running=0;
+function enqueue(files){for(const f of files)queue.push({f,cid:cur});pump()}
+function pump(){while(running<3&&queue.length){const {f,cid}=queue.shift(),k=Math.random();running++;ups[k]={cid,name:f.name,pct:0};
+ const x=new XMLHttpRequest();x.open('POST',`/api/containers/${cid}/upload?name=${encodeURIComponent(f.name)}`);
+ x.upload.onprogress=e=>{ups[k].pct=Math.round(100*e.loaded/e.total);render()};
+ x.onloadend=()=>{delete ups[k];running--;pump();refresh()};x.send(f)}}
+$('pick').onchange=e=>{enqueue([...e.target.files]);e.target.value=''};
+const d=$('drop');d.ondragover=e=>{e.preventDefault();d.classList.add('over')};d.ondragleave=()=>d.classList.remove('over');
+d.ondrop=e=>{e.preventDefault();d.classList.remove('over');enqueue([...e.dataTransfer.files])};
 $('q').addEventListener('keydown',e=>e.key=='Enter'&&go(0));
 async function go(o){
- if(o==0){$('out').innerHTML='';off=0}
- const u=`/api/search?q=${encodeURIComponent($('q').value)}&mode=${$('mode').value}&file=${$('file').value}&offset=${o}&limit=50`;
- const r=await (await fetch(u)).json();
- if(r.error){$('out').innerHTML='<div class=card>'+esc(r.error)+'</div>';return}
- const re=new RegExp('('+$('q').value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','ig');
- r.results.forEach(x=>{$('out').insertAdjacentHTML('beforeend',`<div class=card><div class=src>${esc(x.file)} › ${esc(x.table)}</div>`+
-  x.fields.map(([k,v])=>`<span class=f><b>${esc(k)}:</b> ${esc(v).replace(re,'<mark>$1</mark>')}</span>`).join('')+'</div>')});
- off=o+r.results.length;$('more').style.display=off<r.total?'':'none';
- $('info').textContent=r.total.toLocaleString()+(r.capped?'+':'')+' matches';
-}
+ if(o==0){$('out').innerHTML='';off=0}const q=$('q').value;
+ const r=await J(`/api/search?c=${$('scope').value=='all'?'all':cur}&q=${encodeURIComponent(q)}&mode=${$('mode').value}&offset=${o}&limit=50`);
+ if(r.error){$('out').innerHTML=`<div class=res>${esc(r.error)}</div>`;return}
+ const re=new RegExp('('+q.trim().replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','ig');
+ r.results.forEach(x=>$('out').insertAdjacentHTML('beforeend',`<div class=res><div class=src>${esc(x.container)} › ${esc(x.file)} › ${esc(x.table)}</div>`+
+  x.fields.map(([k,v])=>`<span class=f><b>${esc(k)}:</b> ${esc(v).replace(re,'<mark>$1</mark>')}</span>`).join('')+'</div>'));
+ off=o+r.results.length;$('more').style.display=off<r.total?'':'none';$('info').textContent=fmt(r.total)+(r.capped?'+':'')+' matches'}
+refresh();setInterval(()=>{if(data.some(c=>c.files.some(f=>['queued','running','indexing'].includes(f.state))))refresh()},1000);
 </script>
